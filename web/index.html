@@ -802,7 +802,7 @@ code{font-family:'Courier New',monospace;background:var(--bg4);padding:1px 5px;b
 // ===== DATA =====
 const SELLERS=[{n:'SteamKing',r:4.9,av:'SK'},{n:'AccMarket',r:4.8,av:'AM'},{n:'FastAcc',r:4.7,av:'FA'},{n:'TopShop',r:4.9,av:'TS'},{n:'GameAcc',r:4.6,av:'GA'},{n:'SocialSell',r:4.8,av:'SS'},{n:'DigitalGoods',r:4.7,av:'DG'},{n:'AccountPro',r:4.9,av:'AP'},{n:'MegaAcc',r:4.8,av:'MA'},{n:'UltraShop',r:4.6,av:'US'}];
 
-const CATS=[
+var CATS=[
   {id:'all',label:'cat_all',cnt:1589},
   {id:'steam',label:'Steam',cnt:423},
   {id:'vk',label:'VK',cnt:87},
@@ -1223,7 +1223,7 @@ const CAT_FILTERS={
   ],
 };
 
-const PRODUCTS=[
+var PRODUCTS=[
   // STEAM (20)
   {id:1,cat:'steam',title:'Steam | Уровень 50 | 200 игр | Prime | RU',price:3200,oldPrice:3999,si:4.9,tags:['Ур. 50','200 игр','Prime'],flags:[{t:'Без VAC',c:'g'},{t:'Prime',c:'v'}],desc:'Аккаунт Steam 2018 г., уровень 50, 200 игр, Prime статус. Полный доступ.',det:[{l:'Уровень',v:'50',c:'b'},{l:'Игр',v:'200',c:''},{l:'Баланс',v:'₽ 0',c:''},{l:'Год',v:'2018',c:''},{l:'Страна',v:'RU',c:''},{l:'Prime',v:'Да',c:'g'},{l:'VAC банов',v:'0',c:'g'},{l:'Ранг CS2',v:'Gold Nova I',c:'y'},{l:'Trade бан',v:'Нет',c:'g'},{l:'Доступ',v:'Полный',c:'g'}]},
   {id:2,cat:'steam',title:'Steam | Уровень 120 | 500 игр | Баланс 500₽',price:7500,oldPrice:null,si:4.8,tags:['Ур. 120','500 игр'],flags:[{t:'500 игр',c:'b'},{t:'Баланс 500₽',c:'g'}],desc:'Прокачанный аккаунт Steam, уровень 120, 500 игр, баланс 500₽.',det:[{l:'Уровень',v:'120',c:'b'},{l:'Игр',v:'500',c:'b'},{l:'Баланс',v:'₽ 500',c:'g'},{l:'Год',v:'2016',c:''},{l:'Страна',v:'RU',c:''},{l:'Prime',v:'Нет',c:'r'},{l:'VAC банов',v:'0',c:'g'},{l:'Ранг CS2',v:'MG I',c:'y'},{l:'Trade бан',v:'Нет',c:'g'},{l:'Доступ',v:'Полный',c:'g'}]},
@@ -2253,11 +2253,23 @@ function simulateTopup(){
 // ── Persistence: admin/MCP settings saved to localStorage, merged over
 //    config.js on load. Settings are REAL — they apply and survive reload.
 const CFG_KEY='vault_cfg_v1';
+let _serverCfg=null;          // конфиг с сервера (data/store-config.json) — глобально для всех
+let _cfgPutTimer=null;
 function loadSavedCfg(){try{return JSON.parse(localStorage.getItem(CFG_KEY))||{};}catch{return{};}}
-function persistCfg(){
+function _cfgKeep(){
   const c=_activeCfg||{};
-  const keep={brand:c.brand,theme:c.theme,hero:c.hero,features:c.features,categories:c.categories,categoryColors:c.categoryColors,markup:c.markup,minPrice:c.minPrice,maxPrice:c.maxPrice,currency:c.currency,payments:c.payments,notifications:c.notifications,admin:c.admin};
+  // admin.password НЕ персистим (секрет; задаётся в .env). Храним только флаг.
+  const admin=c.admin?{enabled:c.admin.enabled!==false}:undefined;
+  return {brand:c.brand,theme:c.theme,hero:c.hero,categories:c.categories,categoryColors:c.categoryColors,markup:c.markup,minPrice:c.minPrice,maxPrice:c.maxPrice,currency:c.currency,payments:c.payments,notifications:c.notifications,admin};
+}
+function persistCfg(){
+  const keep=_cfgKeep();
   try{localStorage.setItem(CFG_KEY,JSON.stringify(keep));}catch(e){}
+  // С бэкендом владелец пишет конфиг на сервер → виден всем клиентам (дебаунс).
+  if(_backend&&isOwner()){
+    clearTimeout(_cfgPutTimer);
+    _cfgPutTimer=setTimeout(()=>{fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(keep)}).catch(()=>{});},600);
+  }
   if(document.getElementById('admin-export'))renderAdminExport();
 }
 function deepMerge(base,ovr){
@@ -2272,7 +2284,10 @@ function deepMerge(base,ovr){
 function factoryReset(){
   if(!confirm('Сбросить ВСЕ настройки к config.js? Действие необратимо.'))return;
   try{localStorage.removeItem(CFG_KEY);}catch{}
-  location.reload();
+  // на сервере тоже очищаем сохранённый конфиг
+  const done=()=>location.reload();
+  if(_backend&&isOwner())fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:'{}'}).then(done).catch(done);
+  else done();
 }
 
 // ── Owner-only access. The admin panel belongs to the shop OWNER, not
@@ -2315,6 +2330,11 @@ async function detectBackend(){
     const r=await fetch('/api/health',{cache:'no-store'});if(!r.ok)throw 0;
     _backend=await r.json();
     try{ if(_backend.owner)localStorage.setItem(OWNER_KEY,'1'); else localStorage.removeItem(OWNER_KEY); }catch{}
+    // глобальный конфиг магазина с сервера (виден всем клиентам, не только владельцу)
+    try{
+      const sc=await (await fetch('/api/config',{cache:'no-store'})).json();
+      if(sc&&Object.keys(sc).length){_serverCfg=sc;applyConfig();renderNav();renderSidebar(activeCat);filterProducts();updateCatTitle();}
+    }catch{}
     refreshOwnerUI();
   }catch{_backend=null;}
 }
@@ -2452,18 +2472,15 @@ function renderAdminShop(){
      </div>
      <div class="adm-hint" style="margin-top:8px">Наценка пересчитывает все цены. Применяется к текущему каталогу и сохраняется.</div>
      <div class="adm-sec-t">Доступ владельца</div>
-     <div class="adm-field"><label class="adm-lbl">Пароль владельца (для входа в эту панель)</label><input class="adm-in" type="text" value="${((c.admin&&c.admin.password)||'').replace(/"/g,'&quot;')}" placeholder="owner" oninput="_shopOwnerPw(this.value)"></div>
-     <div class="adm-hint">Этот пароль защищает админку. Сменить можно и здесь, и в config.js → admin.password.</div>`;
+     <div class="adm-hint">Пароль для входа в админку задаётся в <code>.env</code> (<code>OWNER_PASSWORD</code>) на сервере — это безопаснее, чем хранить его в браузере. Передайте его нейросети, она впишет.</div>`;
 }
 function _shopBrand(k,v){const c=_activeCfg;c.brand=c.brand||{};c.brand[k]=v;applyBrand(c);persistCfg();}
 function _shopSet(k,v){_activeCfg[k]=v;persistCfg();}
-function _shopOwnerPw(v){const c=_activeCfg;c.admin=c.admin||{};c.admin.password=v;persistCfg();}
 function _shopMarkup(){
   const v=parseFloat(document.getElementById('shop-markup').value)||1;
   _activeCfg.markup=v;persistCfg();
-  // recompute from base snapshot so markup isn't cumulative
-  if(window._basePrices){window._basePrices.forEach(bp=>{const p=PRODUCTS.find(x=>x.id===bp.id);if(p){p.price=Math.ceil(bp.price*v);p.oldPrice=bp.oldPrice?Math.ceil(bp.oldPrice*v):null;}});}
-  filterProducts();renderAdminStats();toast('Наценка применена');
+  applyCatalogFilters();           // идемпотентно пересчитывает от снимка
+  renderNav();filterProducts();renderAdminStats();toast('Наценка применена');
 }
 
 function renderAdminLook(){
@@ -2492,7 +2509,7 @@ function _lkReset(){if(_activeCfg.theme&&_activeCfg.theme.colors){_activeCfg.the
 
 function renderAdminExport(){
   const c=_activeCfg||{};
-  const cfg={brand:c.brand,theme:c.theme,hero:c.hero,features:c.features,categories:c.categories,categoryColors:c.categoryColors,markup:c.markup,minPrice:c.minPrice,maxPrice:c.maxPrice,currency:c.currency,payments:c.payments,notifications:c.notifications,admin:c.admin};
+  const cfg={brand:c.brand,theme:c.theme,hero:c.hero,categories:c.categories,categoryColors:c.categoryColors,markup:c.markup,minPrice:c.minPrice,maxPrice:c.maxPrice,currency:c.currency,payments:c.payments,notifications:c.notifications,admin:c.admin};
   let js='window.GHOSTSHOP_CONFIG = '+JSON.stringify(cfg,(k,v)=>v===undefined?undefined:v,2)+';';
   const el=document.getElementById('admin-export');
   el.innerHTML=`<div class="adm-hint" style="margin-bottom:10px">Текущие настройки как <b>config.js</b>. Это то же, что правит Claude через MCP — скопируйте и сохраните в файл, либо попросите Claude применить.</div>
@@ -2529,15 +2546,6 @@ function scrollToCatalog(){
   const el=document.getElementById('catalog');
   if(el)window.scrollTo({top:el.offsetTop-90,behavior:'smooth'});
 }
-
-// ── trust-band icons ──
-const TRUST_ICONS={
-  bolt:'<path d="M13 2L3 14h7l-1 8 10-12h-7z"/>',
-  shield:'<path d="M12 2l8 4v6c0 4.5-3 7.5-8 10-5-2.5-8-5.5-8-10V6z"/><path d="M9 12l2 2 4-4"/>',
-  lock:'<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>',
-  headset:'<path d="M4 14v-2a8 8 0 0116 0v2"/><path d="M4 14a2 2 0 002 2h1v-4H6a2 2 0 00-2 2zM20 14a2 2 0 01-2 2h-1v-4h1a2 2 0 012 2z"/><path d="M18 16v1a3 3 0 01-3 3h-3"/>',
-};
-function svgIcon(name){return`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${TRUST_ICONS[name]||''}</svg>`;}
 
 // ── brand (name, logo, socials) ──
 function applyBrand(C){
@@ -2586,48 +2594,42 @@ function renderHero(C){
     `<div class="hstat"><div class="hstat-v">${s.v}</div><div class="hstat-l">${s.l}</div></div>`).join('');
 }
 
-// ── trust band ──
-function renderTrust(C){
-  const items=C.features||[
-    {icon:'bolt',title:'Мгновенная выдача',desc:'Данные сразу после оплаты'},
-    {icon:'shield',title:'Гарантия замены',desc:'Не подошёл — заменим'},
-    {icon:'lock',title:'Безопасная оплата',desc:'Карта · USDT · СБП'},
-    {icon:'headset',title:'Поддержка 24/7',desc:'Ответим за минуты'},
-  ];
-  document.getElementById('trust').innerHTML=items.map(f=>
-    `<div class="trust-item"><div class="trust-ic">${svgIcon(f.icon)}</div>
-      <div class="trust-tx"><div class="trust-t">${f.title}</div><div class="trust-d">${f.desc}</div></div></div>`).join('');
-}
 
 // ===== APPLY CONFIG =====
-function applyConfig(){
-  // base config (config.js / MCP) merged with persisted admin changes (localStorage)
-  const base=window.GHOSTSHOP_CONFIG||{};
-  const C=_activeCfg=deepMerge(base,loadSavedCfg());
-  _basePreset=(C.theme&&C.theme.preset&&C.theme.preset!=='light')?C.theme.preset:'vault';
-  applyDesign(C);
-  applyBrand(C);
-  // per-category color overrides (deep-brandable)
-  if(C.categoryColors&&typeof C.categoryColors==='object'){
-    Object.assign(CAT_COLORS,C.categoryColors);
-  }
-  // category whitelist
+// Применяет фильтры каталога из конфига. Идемпотентно: каждый раз сбрасывает
+// PRODUCTS/CATS/CAT_COLORS к исходным снимкам, затем накладывает настройки.
+function applyCatalogFilters(){
+  const C=_activeCfg||{};
+  if(!window._baseProducts)window._baseProducts=PRODUCTS.map(p=>({...p}));
+  if(!window._baseCats)window._baseCats=CATS.map(c=>({...c}));
+  if(!window._baseCatColors)window._baseCatColors={...CAT_COLORS};
+  PRODUCTS=window._baseProducts.map(p=>({...p}));
+  CATS=window._baseCats.map(c=>({...c}));
+  Object.assign(CAT_COLORS,window._baseCatColors,(C.categoryColors&&typeof C.categoryColors==='object')?C.categoryColors:{});
   if(Array.isArray(C.categories)&&C.categories.length){
     const allowed=new Set(['all',...C.categories]);
-    window.CATS=CATS.filter(c=>allowed.has(c.id));
-    window.PRODUCTS=PRODUCTS.filter(p=>C.categories.includes(p.cat));
+    CATS=CATS.filter(c=>allowed.has(c.id));
+    PRODUCTS=PRODUCTS.filter(p=>C.categories.includes(p.cat));
   }
-  // snapshot original prices once, then apply markup from base (idempotent)
-  if(!window._basePrices)window._basePrices=PRODUCTS.map(p=>({id:p.id,price:p.price,oldPrice:p.oldPrice}));
   const mk=C.markup||1;
-  if(mk!==1){window._basePrices.forEach(bp=>{const p=PRODUCTS.find(x=>x.id===bp.id);if(p){p.price=Math.ceil(bp.price*mk);p.oldPrice=bp.oldPrice?Math.ceil(bp.oldPrice*mk):null;}});}
-  if(C.minPrice>0) window.PRODUCTS=PRODUCTS.filter(p=>p.price>=C.minPrice);
-  if(C.maxPrice>0) window.PRODUCTS=PRODUCTS.filter(p=>p.price<=C.maxPrice);
-  if(typeof C.productFilter==='function') window.PRODUCTS=PRODUCTS.filter(C.productFilter);
-  // recount categories
+  if(mk!==1)PRODUCTS.forEach(p=>{p.price=Math.ceil(p.price*mk);if(p.oldPrice)p.oldPrice=Math.ceil(p.oldPrice*mk);});
+  if(C.minPrice>0)PRODUCTS=PRODUCTS.filter(p=>p.price>=C.minPrice);
+  if(C.maxPrice>0)PRODUCTS=PRODUCTS.filter(p=>p.price<=C.maxPrice);
+  if(typeof C.productFilter==='function')PRODUCTS=PRODUCTS.filter(C.productFilter);
   CATS.forEach(c=>{if(c.id!=='all')c.cnt=PRODUCTS.filter(p=>p.cat===c.id).length;});
-  CATS[0].cnt=PRODUCTS.length;
-  renderHero(C);
+  if(CATS[0])CATS[0].cnt=PRODUCTS.length;
+}
+function applyConfig(){
+  // База — config.js (MCP). Поверх: серверный конфиг (глобально, если есть бэкенд),
+  // иначе локальные изменения из localStorage (демо/статика).
+  const base=window.GHOSTSHOP_CONFIG||{};
+  const saved=_backend?(_serverCfg||{}):loadSavedCfg();
+  _activeCfg=deepMerge(base,saved);
+  _basePreset=(_activeCfg.theme&&_activeCfg.theme.preset&&_activeCfg.theme.preset!=='light')?_activeCfg.theme.preset:'vault';
+  applyDesign(_activeCfg);
+  applyBrand(_activeCfg);
+  applyCatalogFilters();
+  renderHero(_activeCfg);
   refreshOwnerUI();
 }
 

@@ -81,6 +81,7 @@
     }
     if (all.length) {
       global.PRODUCTS = all;
+      global._baseProducts = all.map(p => ({ ...p }));   // обновляем снимок, иначе applyConfig сбросит к сид-данным
       if (typeof applyConfig === 'function') applyConfig();
       if (typeof renderNav === 'function') renderNav();
       if (typeof renderSidebar === 'function') renderSidebar('all');

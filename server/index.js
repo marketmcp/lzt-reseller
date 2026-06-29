@@ -125,6 +125,7 @@ function readBody(req, limit = 1e6) {
 const rl = new Map();
 function rateLimit(ip, max = 60, win = 60000) {
   const now = Date.now(); const e = rl.get(ip);
+  if (rl.size > 10000) rl.clear();                              // защита от роста памяти
   if (!e || now > e.reset) { rl.set(ip, { n: 1, reset: now + win }); return true; }
   if (e.n >= max) return false;
   e.n++; return true;
@@ -133,7 +134,7 @@ function rateLimit(ip, max = 60, win = 60000) {
 // ─── серверный кэш листингов LZT ───
 const cache = new Map();
 function cacheGet(k, ttl) { const e = cache.get(k); if (e && Date.now() - e.t < ttl) return e.v; return null; }
-function cacheSet(k, v) { cache.set(k, { v, t: Date.now() }); }
+function cacheSet(k, v) { if (cache.size > 500) cache.clear(); cache.set(k, { v, t: Date.now() }); }
 
 // ─── прокси к LZT (токен добавляется на сервере, в браузер не уходит) ───
 function lztRequest(method, pathQuery, body) {
@@ -229,7 +230,7 @@ async function api(req, res, u) {
   // ── store config (публичный GET, запись только владелец) ──
   if (p === '/api/config') {
     if (req.method === 'GET') {
-      try { return send(res, 200, JSON.parse(fs.readFileSync(CFG.configFile, 'utf8'))); }
+      try { const j = JSON.parse(fs.readFileSync(CFG.configFile, 'utf8')); if (j && j.admin) delete j.admin.password; return send(res, 200, j); }
       catch { return send(res, 200, {}); }
     }
     if (req.method === 'PUT') {

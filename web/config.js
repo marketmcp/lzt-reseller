@@ -86,16 +86,6 @@ window.GHOSTSHOP_CONFIG = {
     ],
   },
 
-  /* ──────────────────── TRUST-ПОЛОСА (преимущества) ───────────────
-     icon: 'bolt' | 'shield' | 'lock' | 'headset'
-     ────────────────────────────────────────────────────────────── */
-  features: [
-    { icon: 'bolt',    title: 'Мгновенная выдача', desc: 'Данные сразу после оплаты' },
-    { icon: 'shield',  title: 'Гарантия замены',   desc: 'Не подошёл — заменим' },
-    { icon: 'lock',    title: 'Безопасная оплата',  desc: 'Карта · USDT · СБП' },
-    { icon: 'headset', title: 'Поддержка 24/7',     desc: 'Ответим за минуты' },
-  ],
-
   /* ─────────────────────────── КАТЕГОРИИ ─────────────────────────
      null = все 29. Массив = только указанные.
      ID: steam vk instagram twitter facebook tiktok youtube twitch
