@@ -2335,6 +2335,7 @@ async function detectBackend(){
       const sc=await (await fetch('/api/config',{cache:'no-store'})).json();
       if(sc&&Object.keys(sc).length){_serverCfg=sc;applyConfig();renderNav();renderSidebar(activeCat);filterProducts();updateCatTitle();}
     }catch{}
+    loadCatalog();                 // прогрессивно подтянуть общий каталог (no-op в демо)
     refreshOwnerUI();
   }catch{_backend=null;}
 }
@@ -2618,6 +2619,30 @@ function applyCatalogFilters(){
   if(typeof C.productFilter==='function')PRODUCTS=PRODUCTS.filter(C.productFilter);
   CATS.forEach(c=>{if(c.id!=='all')c.cnt=PRODUCTS.filter(p=>p.cat===c.id).length;});
   if(CATS[0])CATS[0].cnt=PRODUCTS.length;
+}
+// LZT-слаг категории → id категории витрины
+const CAT_SLUG={steam:'steam',fortnite:'fortnite',mihoyo:'genshin',riot:'valorant',telegram:'telegram',supercell:'supercell',origin:'ea','world-of-tanks':'wot',epicgames:'epic',escapefromtarkov:'eft',socialclub:'rockstar',uplay:'ubisoft',discord:'discord',tiktok:'tiktok',instagram:'instagram',battlenet:'bnet',vpn:'vpn',roblox:'roblox',minecraft:'minecraft',gifts:'gifts'};
+function _mapCatalogItem(x){
+  const det=Object.entries(x.attrs||{}).slice(0,10).map(([l,v])=>({l,v:String(v),c:''}));
+  return {id:x.item_id,cat:CAT_SLUG[x.cat]||x.cat,title:x.title,price:x.price,oldPrice:x.price_old||null,si:4.8,tags:[x.origin].filter(Boolean),flags:[],desc:'',det};
+}
+// Прогрессивная загрузка общего каталога (нода/федерация). В демо без товаров — no-op.
+let _catalogPolls=0;
+async function loadCatalog(){
+  try{
+    const stat=await (await fetch('/api/catalog/stats',{cache:'no-store'})).json();
+    if(stat&&stat.total){
+      const data=await (await fetch('/api/catalog?limit=100000',{cache:'no-store'})).json();
+      const items=(data.items||[]).map(_mapCatalogItem);
+      if(items.length){
+        window._baseProducts=items.map(p=>({...p}));
+        PRODUCTS=items;
+        applyCatalogFilters();renderNav();renderSidebar(activeCat);filterProducts();
+      }
+    }
+    // пока идёт синхронизация — продолжаем подтягивать (прогрессивно)
+    if(stat&&stat.syncing&&_catalogPolls<60){_catalogPolls++;setTimeout(loadCatalog,5000);}
+  }catch{}
 }
 function applyConfig(){
   // База — config.js (MCP). Поверх: серверный конфиг (глобально, если есть бэкенд),

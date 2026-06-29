@@ -42,8 +42,13 @@ const CFG = {
   ownerPassword: process.env.OWNER_PASSWORD || '',
   ownerHash: process.env.OWNER_PASSWORD_HASH || '',          // sha256 hex (предпочтительно)
   sessionSecret: process.env.SESSION_SECRET || '',
-  lztToken: process.env.LZT_TOKEN || '',
+  // Пул токенов: LZT_TOKENS="t1,t2,t3" (быстрее) или один LZT_TOKEN.
+  lztTokens: (process.env.LZT_TOKENS || process.env.LZT_TOKEN || '').split(',').map(s => s.trim()).filter(Boolean),
   lztHost: process.env.LZT_HOST || 'prod-api.lzt.market',
+  searchGap: parseInt(process.env.LZT_SEARCH_GAP_MS || '3100', 10),   // на токен, ~20 поисков/мин
+  genGap: parseInt(process.env.LZT_GEN_GAP_MS || '600', 10),          // на токен, ~100/мин
+  peers: (process.env.CATALOG_PEERS || '').split(',').map(s => s.trim()).filter(Boolean),
+  syncMin: parseInt(process.env.CATALOG_SYNC_MIN || '10', 10),        // период синка, мин (0 = выкл)
   tgToken: process.env.TELEGRAM_BOT_TOKEN || '',
   tgChat: process.env.TELEGRAM_CHAT_ID || '',
   cbToken: process.env.CRYPTOBOT_TOKEN || '',                  // CryptoBot (Crypto Pay) — оплата криптой
@@ -60,7 +65,22 @@ if (!CFG.ownerPassword && !CFG.ownerHash) {
   CFG.ownerPassword = 'owner';
   console.warn('[security] ⚠ OWNER_PASSWORD не задан — используется "owner". ОБЯЗАТЕЛЬНО смените перед публикацией!');
 }
-if (!CFG.lztToken) console.warn('[lzt] LZT_TOKEN не задан — сайт работает в ДЕМО-режиме (сид-данные во фронтенде).');
+if (!CFG.lztTokens.length) console.warn('[lzt] LZT_TOKEN не задан — ДЕМО-режим (сид-данные во фронтенде).');
+else console.log(`[lzt] токенов в пуле: ${CFG.lztTokens.length}`);
+
+const catalog = require('./catalog');
+
+// ── Пул токенов LZT: round-robin с per-token rate limit (N токенов = N x скорость) ──
+const _tokPool = CFG.lztTokens.map(t => ({ t, free: 0 }));
+async function acquireToken(search) {
+  if (!_tokPool.length) return null;
+  _tokPool.sort((a, b) => a.free - b.free);
+  const tk = _tokPool[0];
+  const wait = tk.free - Date.now();
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  tk.free = Date.now() + (search ? CFG.searchGap : CFG.genGap);
+  return tk.t;
+}
 
 // ════════════════════════ helpers ════════════════════════
 const sha256 = s => crypto.createHash('sha256').update(s).digest('hex');
@@ -136,12 +156,14 @@ const cache = new Map();
 function cacheGet(k, ttl) { const e = cache.get(k); if (e && Date.now() - e.t < ttl) return e.v; return null; }
 function cacheSet(k, v) { if (cache.size > 500) cache.clear(); cache.set(k, { v, t: Date.now() }); }
 
-// ─── прокси к LZT (токен добавляется на сервере, в браузер не уходит) ───
-function lztRequest(method, pathQuery, body) {
-  return new Promise((resolve, reject) => {
+// ─── прокси к LZT (токен из пула, добавляется на сервере, в браузер не уходит) ───
+function lztRequest(method, pathQuery, body, search) {
+  return new Promise(async (resolve, reject) => {
+    const token = await acquireToken(search);
+    if (!token) return reject(new Error('no_token'));
     const opts = {
       host: CFG.lztHost, path: pathQuery, method,
-      headers: { 'Accept': 'application/json', 'Authorization': 'Bearer ' + CFG.lztToken },
+      headers: { 'Accept': 'application/json', 'Authorization': 'Bearer ' + token },
     };
     if (body) { opts.headers['Content-Type'] = 'application/json'; }
     const r = https.request(opts, resp => {
@@ -151,6 +173,19 @@ function lztRequest(method, pathQuery, body) {
     r.on('error', reject);
     if (body) r.write(JSON.stringify(body));
     r.end();
+  });
+}
+// helper для каталога: GET /{cat}?params (помечаем как search для троттлинга)
+async function lztGet(path, params) {
+  const qs = Object.entries(params || {}).filter(([, v]) => v != null && v !== '').map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
+  const r = await lztRequest('GET', path + (qs ? '?' + qs : ''), null, true);
+  return r.json;
+}
+// GET JSON (для федерации — тянем у пиров публичный каталог). http и https.
+function getJson(url) {
+  const lib = url.startsWith('https') ? https : http;
+  return new Promise((resolve, reject) => {
+    lib.get(url, resp => { let d = ''; resp.on('data', c => d += c); resp.on('end', () => { try { resolve(JSON.parse(d || '{}')); } catch { resolve({}); } }); }).on('error', reject);
   });
 }
 function telegramSend(text) {
@@ -211,7 +246,17 @@ async function api(req, res, u) {
   const p = u.pathname;
 
   // health / demo-detection
-  if (p === '/api/health') return send(res, 200, { ok: true, demo: !CFG.lztToken, owner: isOwner(req), telegram: !!(CFG.tgToken && CFG.tgChat), pay: { cryptobot: !!CFG.cbToken } });
+  if (p === '/api/health') return send(res, 200, { ok: true, demo: !CFG.lztTokens.length, tokens: CFG.lztTokens.length, owner: isOwner(req), telegram: !!(CFG.tgToken && CFG.tgChat), pay: { cryptobot: !!CFG.cbToken }, catalog: { total: catalog.store.size, syncing: catalog.stats().syncing } });
+
+  // ── Каталог: публичные листинги (кэш ноды + федерация). БЕЗ кредов/токенов. ──
+  if (p === '/api/catalog') return send(res, 200, catalog.list({ cat: u.searchParams.get('cat'), q: u.searchParams.get('q'), limit: Math.min(parseInt(u.searchParams.get('limit') || '500', 10) || 500, 100000), offset: parseInt(u.searchParams.get('offset') || '0', 10) || 0 }));
+  if (p === '/api/catalog/stats') return send(res, 200, catalog.stats());
+  if (p === '/api/catalog/sync' && req.method === 'POST') {
+    if (!isOwner(req)) return send(res, 403, { error: 'forbidden' });
+    if (!CFG.lztTokens.length && !CFG.peers.length) return send(res, 400, { error: 'no_tokens_or_peers' });
+    runSync();                                                  // в фоне
+    return send(res, 200, { ok: true, started: true });
+  }
 
   // ── owner auth ──
   if (p === '/api/auth/login' && req.method === 'POST') {
@@ -287,22 +332,41 @@ async function api(req, res, u) {
 
   // ── LZT proxy (токен на сервере, в браузер не уходит) ──
   if (p.startsWith('/api/lzt/')) {
-    if (!CFG.lztToken) return send(res, 503, { error: 'demo_mode', demo: true });
+    if (!CFG.lztTokens.length) return send(res, 503, { error: 'demo_mode', demo: true });
     const lztPath = '/' + p.slice('/api/lzt/'.length) + (u.search || '');
     // чтение листингов — публично и кэшируется; покупка/выдача данных — только владелец
+    const isSearch = req.method === 'GET' && !/\/(mafile|letters)(\b|\/|\?|$)/.test(lztPath);
     const sensitive = req.method !== 'GET' || /\/(fast-buy|mafile|letters)(\b|\/|\?|$)/.test(lztPath);
     if (sensitive && !isOwner(req)) return send(res, 403, { error: 'forbidden', hint: 'нужна авторизация владельца' });
     const ck = req.method + ' ' + lztPath;
     if (req.method === 'GET') { const c = cacheGet(ck, 5 * 60000); if (c) return send(res, 200, c); }
     let body = null; if (req.method !== 'GET') { try { body = JSON.parse(await readBody(req)); } catch {} }
     try {
-      const r = await lztRequest(req.method, lztPath, body);
+      const r = await lztRequest(req.method, lztPath, body, isSearch);
+      // перевалидация: если товар продан/удалён — убрать из общего кэша каталога
+      const sold = r.json && r.json.errors && /sold|deleted|not.*found/i.test(JSON.stringify(r.json.errors));
+      if (sold) { const m = lztPath.match(/^\/(\d+)\//); if (m) for (const k of [...catalog.store.keys()]) if (k.endsWith(':' + m[1])) catalog.store.delete(k); }
       if (req.method === 'GET' && r.status === 200) cacheSet(ck, r.json);
       return send(res, r.status, r.json);
     } catch (e) { return send(res, 502, { error: 'upstream_failed' }); }
   }
 
   return send(res, 404, { error: 'not_found' });
+}
+
+// ── синхронизация каталога: федерация (пиры) + свой обход LZT ──
+let _syncRunning = false;
+async function runSync() {
+  if (_syncRunning) return; _syncRunning = true;
+  try {
+    if (CFG.peers.length) { try { const n = await catalog.pullPeers(CFG.peers, getJson); if (n) console.log(`[catalog] от пиров: +${n} (итого ${catalog.store.size})`); } catch {} }
+    if (CFG.lztTokens.length) { await catalog.sync(lztGet, {}); console.log(`[catalog] обход LZT готов: ${catalog.store.size} товаров`); }
+  } finally { _syncRunning = false; }
+}
+function startSync() {
+  if (!CFG.lztTokens.length && !CFG.peers.length) return;
+  setTimeout(runSync, 1500);
+  if (CFG.syncMin > 0) setInterval(runSync, CFG.syncMin * 60000);
 }
 
 // ════════════════════════ server ════════════════════════
@@ -313,6 +377,7 @@ http.createServer((req, res) => {
   serveStatic(req, res, u.pathname);
 }).listen(CFG.port, CFG.host, () => {
   console.log(`\n  Магазин → http://localhost:${CFG.port}`);
-  console.log(`  Режим: ${CFG.lztToken ? 'LIVE (LZT подключён)' : 'ДЕМО (сид-данные)'}`);
+  console.log(`  Режим: ${CFG.lztTokens.length ? `LIVE (токенов: ${CFG.lztTokens.length})` : 'ДЕМО (сид-данные)'}${CFG.peers.length ? `, пиров: ${CFG.peers.length}` : ''}`);
   console.log(`  Админка: http://localhost:${CFG.port}/#admin\n`);
+  startSync();
 });
