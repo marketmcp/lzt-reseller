@@ -32,14 +32,47 @@
 ## id категорий
 `steam vk instagram twitter facebook tiktok youtube twitch discord telegram fortnite valorant apex genshin eft roblox minecraft lol bnet epic ea ubisoft rockstar supercell wot warzone gifts vpn`
 
-## Деплой (можно выполнить за пользователя)
+## Деплой за пользователя (раннбук — выполняй сам через MCP)
 
-- Локальный запуск: `npm start` → `http://localhost:3000`, админка `/#admin`.
-- Ubuntu-сервер + домен (одна команда на сервере):
-  `curl -fsSL https://raw.githubusercontent.com/marketmcp/lzt-reseller/main/deploy/server-setup.sh | sudo bash -s -- ДОМЕН`
-  затем вписать `OWNER_PASSWORD` и `LZT_TOKEN` в `/opt/lzt-reseller/.env` и `systemctl restart lzt-reseller`.
-- Обновление: `sudo bash /opt/lzt-reseller/deploy/update.sh`.
-- Подробно — `docs/DEPLOY.md`.
+Цель: пользователь только покупает сервер и даёт данные — всё остальное делает нейросеть.
+
+**Шаг 0. Спроси у пользователя (одним сообщением):**
+- IP сервера и root-доступ (пароль или SSH-ключ). Сервер: Ubuntu 22.04/24.04, 1 vCPU / 1 ГБ RAM (любой VPS).
+- Домен (например `shop.example.com`), добавленный в Cloudflare, и **Cloudflare API-токен** (шаблон «Edit zone DNS»).
+- Пароль владельца для админки. Опционально: токен LZT, токен Telegram-бота + chat id, токен CryptoBot.
+
+**Шаг 1. DNS через Cloudflare (локально, есть curl):**
+```
+bash deploy/cloudflare-dns.sh <CF_TOKEN> <домен> <IP>
+```
+
+**Шаг 2. Установка на сервер (по SSH):**
+```
+ssh root@<IP> "curl -fsSL https://raw.githubusercontent.com/marketmcp/lzt-reseller/main/deploy/server-setup.sh | bash -s -- <домен>"
+```
+
+**Шаг 3. Секреты в .env на сервере** (подставь полученные значения; пустые — пропусти):
+```
+ssh root@<IP> "cd /opt/lzt-reseller && \
+  sed -i 's|^OWNER_PASSWORD=.*|OWNER_PASSWORD=<пароль>|' .env && \
+  sed -i 's|^LZT_TOKEN=.*|LZT_TOKEN=<токен>|' .env && \
+  sed -i 's|^TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=<токен>|' .env && \
+  sed -i 's|^TELEGRAM_CHAT_ID=.*|TELEGRAM_CHAT_ID=<id>|' .env && \
+  sed -i 's|^CRYPTOBOT_TOKEN=.*|CRYPTOBOT_TOKEN=<токен>|' .env && \
+  systemctl restart lzt-reseller"
+```
+
+**Шаг 4. Проверка:** `curl -s https://<домен>/api/health` → `{"ok":true,...}`. Сообщи пользователю ссылку и `/#admin`.
+
+**Обновление кода:** `ssh root@<IP> "bash /opt/lzt-reseller/deploy/update.sh"`.
+
+> Никогда не печатай секреты в ответе пользователю и не коммить их. Передавай напрямую в команды.
+
+## Подключение оплаты и уведомлений (за пользователя)
+
+- **Оплата криптой (CryptoBot):** пользователь создаёт приложение в @CryptoBot → Crypto Pay → получает токен → ты вписываешь его в `CRYPTOBOT_TOKEN` (.env) и перезапускаешь. Метод `provider:'crypto'` в `payments` начнёт принимать реальные платежи.
+- **Telegram-уведомления:** токен у @BotFather, chat id у @userinfobot → в `.env` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`). Магазин шлёт уведомления о покупках/пополнениях.
+- Свой мерчант (ЮMoney/карты): добавь метод в `payments` (`config.js`), серверную интеграцию вебхука — в `server/index.js` (`/api/pay/*`).
 
 ## Правила
 1. **Никогда** не вписывай реальные секреты (`LZT_TOKEN`, пароли, токены ботов) в `web/config.js` или любой коммитимый файл — только в `.env`.

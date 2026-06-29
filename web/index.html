@@ -445,6 +445,12 @@ code{font-family:'Courier New',monospace;background:var(--bg4);padding:1px 5px;b
 .adm-tog-row:last-child{border-bottom:none}
 .adm-tog-tx{font-size:13px;color:var(--tx)}
 .adm-tog-tx span{display:block;font-size:11px;color:var(--tx3);margin-top:2px}
+.adm-status{font-size:12.5px;font-weight:600;border-radius:var(--rad);padding:10px 12px;margin-bottom:6px;line-height:1.5}
+.adm-status.ok{background:rgba(var(--g-rgb),.1);border:1px solid rgba(var(--g-rgb),.25);color:var(--g)}
+.adm-status.warn{background:rgba(var(--y-rgb),.08);border:1px solid rgba(var(--y-rgb),.25);color:var(--y);font-weight:500}
+.adm-steps{margin:0 0 6px;padding-left:20px;font-size:12.5px;color:var(--tx2);line-height:1.7}
+.adm-steps li{margin-bottom:4px}
+.adm-steps code{font-size:.9em}
 .adm-code{background:var(--bg5);border:1px solid var(--br);border-radius:var(--rad);padding:14px;font-family:'Courier New',monospace;font-size:11.5px;color:var(--tx2);white-space:pre;overflow:auto;max-height:340px;line-height:1.6}
 .adm-look-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:6px}
 .adm-swatch{border:1px solid var(--br);border-radius:var(--rad);padding:10px;cursor:pointer;text-align:center;font-size:11px;font-weight:600;color:var(--tx2);transition:border-color .15s}
@@ -2065,22 +2071,64 @@ function openBuy(id){
   openModal('modal-buy');
 }
 
+function _selectedPm(group){
+  const el=document.querySelector('#'+group+' .pm.on');
+  const id=el&&el.dataset.pm;
+  return ((_activeCfg&&_activeCfg.payments)||[]).find(x=>x.id===id)||null;
+}
 function simulatePay(){
-  const email=document.getElementById('m-email').value.trim();
+  const p=PRODUCTS.find(x=>x.id===currentProductId); if(!p)return;
+  const pm=_selectedPm('buy-pm');
   closeModal('modal-buy');
+  // Реальная оплата криптой через CryptoBot, если метод крипто-провайдера и бот настроен на сервере.
+  if(_backend&&_backend.pay&&_backend.pay.cryptobot&&pm&&pm.provider==='crypto') return payCrypto(p);
+  _payDemo(p);
+}
+function _payDemo(p){
   openModal('modal-loading');
-  setTimeout(()=>{
-    closeModal('modal-loading');
-    const p=PRODUCTS.find(x=>x.id===currentProductId);
-    if(!p) return;
-    USER.balance=Math.max(0,USER.balance-p.price);
-    updateBalanceDisplay();
-    const ordId=Math.floor(Math.random()*90000)+10000;
-    USER.orders.unshift({id:ordId,title:p.title,price:p.price,date:new Date().toISOString().slice(0,10),status:'Выполнен',prodId:p.id});
-    showSuccess(p, ordId);
-    // Invalidate balance cache after purchase
-    API_CACHE.invalidate('user_balance');
-  },1600);
+  const tx=document.querySelector('#modal-loading .loading-txt'); if(tx)tx.textContent='Обрабатываем оплату…';
+  setTimeout(()=>{closeModal('modal-loading');_completeOrder(p,true);},1600);
+}
+async function payCrypto(p){
+  openModal('modal-loading');
+  const tx=document.querySelector('#modal-loading .loading-txt'); if(tx)tx.textContent='Создаём счёт CryptoBot…';
+  try{
+    const r=await fetch('/api/pay/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount:p.price,title:p.title,currency:(_activeCfg&&_activeCfg.currency)||'RUB'})});
+    const d=await r.json();
+    if(!d.configured){closeModal('modal-loading');return _payDemo(p);}      // токена нет — демо
+    if(!d.payUrl){closeModal('modal-loading');toast('Не удалось создать счёт');return;}
+    window.open(d.payUrl,'_blank');
+    _awaitPayment(p,d.invoiceId);
+  }catch{closeModal('modal-loading');toast('Сервис оплаты недоступен');}
+}
+function _awaitPayment(p,invoiceId){
+  const tx=document.querySelector('#modal-loading .loading-txt');
+  if(tx)tx.innerHTML='Ожидаем оплату в CryptoBot…<br><span style="font-size:11px;color:var(--tx3)">Счёт открыт в новой вкладке</span>';
+  let n=0;
+  const t=setInterval(async()=>{
+    if(++n>120){clearInterval(t);closeModal('modal-loading');toast('Время ожидания истекло');return;}
+    try{const r=await fetch('/api/pay/status?invoiceId='+encodeURIComponent(invoiceId));const d=await r.json();
+      if(d.paid){clearInterval(t);closeModal('modal-loading');_completeOrder(p,false);}}catch{}
+  },3000);
+}
+function _completeOrder(p,deduct){
+  if(deduct){USER.balance=Math.max(0,USER.balance-p.price);updateBalanceDisplay();}
+  const ordId=Math.floor(Math.random()*90000)+10000;
+  USER.orders.unshift({id:ordId,title:p.title,price:p.price,date:new Date().toISOString().slice(0,10),status:'Выполнен',prodId:p.id});
+  showSuccess(p,ordId);
+  API_CACHE.invalidate('user_balance');
+  notifyEvent('purchase',{title:p.title,price:p.price,order:ordId});
+}
+
+// Отправка события в Telegram (через бэкенд). Тихо ничего не делает,
+// если нет сервера, бот не настроен или событие выключено в админке.
+function notifyEvent(type,data){
+  if(!_backend||!_backend.telegram)return;
+  const ev=(_activeCfg&&_activeCfg.notifications&&_activeCfg.notifications.telegram&&_activeCfg.notifications.telegram.events)||{};
+  const gate={purchase:'newOrder',topup:'payout'}[type];
+  if(gate&&ev[gate]===false)return;
+  const cur=({RUB:'₽',USD:'$',EUR:'€'})[(_activeCfg&&_activeCfg.currency)||'RUB']||'₽';
+  fetch('/api/notify/event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.assign({type,currency:cur},data))}).catch(()=>{});
 }
 
 function showSuccess(p, existingOrderId){
@@ -2194,6 +2242,7 @@ function simulateTopup(){
     document.querySelectorAll('.ta-btn').forEach(b=>b.classList.remove('on'));
     document.querySelector('.ta-btn:nth-child(2)')?.classList.add('on');
     alert(`Баланс пополнен на ₽ ${amount.toLocaleString('ru')}. Новый баланс: ₽ ${USER.balance.toLocaleString('ru')}`);
+    notifyEvent('topup',{amount,balance:USER.balance});
   },1200);
 }
 
@@ -2324,8 +2373,13 @@ function renderAdminPay(){
       <button class="adm-btn danger sm" onclick="_pmRemove(${i})">✕</button>
     </div>`;
   }).join('');
+  const cb=!!(_backend&&_backend.pay&&_backend.pay.cryptobot);
+  const cbStatus=cb
+    ? `<div class="adm-status ok">✓ CryptoBot подключён — крипто-оплата работает (метод с <code>provider:'crypto'</code>)</div>`
+    : `<div class="adm-status warn">Для приёма криптой задайте <code>CRYPTOBOT_TOKEN</code> в <code>.env</code> (токен у @CryptoBot → Crypto Pay). Без него крипто-метод работает как демо.</div>`;
   document.getElementById('admin-pay').innerHTML=
-    `<div class="adm-hint" style="margin-bottom:12px">Подключайте любых мерчантов/шлюзы. Поля = массив <b>payments</b> в config.js (то же правит MCP).</div>
+    `<div class="adm-hint" style="margin-bottom:10px">Методы = массив <b>payments</b> в config.js. Включайте/добавляйте мерчантов; секретные токены шлюзов — в <code>.env</code> на сервере.</div>
+     ${cbStatus}
      ${rows||'<div class="adm-hint">Пока нет методов.</div>'}
      <div class="adm-row" style="margin-top:12px">
        <button class="adm-btn ghost sm" onclick="_pmAdd()">+ Добавить мерчанта</button>
@@ -2341,23 +2395,34 @@ function _pmSave(){renderPayments('buy-pm');renderPayments('topup-pm');persistCf
 function renderAdminNotif(){
   const tg=((_activeCfg.notifications=_activeCfg.notifications||{}).telegram=_activeCfg.notifications.telegram||{events:{}});
   tg.events=tg.events||{};
-  const ev=[['newOrder','Новый заказ','при каждой покупке'],['newUser','Новый пользователь','регистрация'],['lowStock','Мало товара','остаток в категории низкий'],['payout','Пополнения','зачисления баланса']];
+  const connected=!!(_backend&&_backend.telegram);
+  const ev=[['newOrder','Новая покупка','уведомлять о каждом заказе'],['payout','Пополнения','зачисления баланса'],['newUser','Новый пользователь','регистрация'],['lowStock','Мало товара','низкий остаток в категории']];
+  const status=connected
+    ? `<div class="adm-status ok">✓ Бот подключён на сервере — уведомления работают</div>`
+    : `<div class="adm-status warn">Бот не настроен. Добавьте токен в <code>.env</code> на сервере (или попросите нейросеть это сделать).</div>`;
   document.getElementById('admin-notif').innerHTML=
-    `<div class="adm-hint" style="margin-bottom:14px">Telegram-бот для оповещений администратора. Поля = <b>notifications.telegram</b> в config.js.</div>
-     <div class="adm-field"><label class="adm-lbl">Bot Token (от @BotFather)</label>
-       <input class="adm-in" type="text" value="${(tg.botToken||'').replace(/"/g,'&quot;')}" placeholder="123456:ABC-DEF..." oninput="_nfEdit('botToken',this.value)"></div>
-     <div class="adm-field"><label class="adm-lbl">Chat ID (ваш id или id канала)</label>
-       <input class="adm-in" type="text" value="${(tg.chatId||'').replace(/"/g,'&quot;')}" placeholder="-1001234567890" oninput="_nfEdit('chatId',this.value)"></div>
-     <div class="adm-sec-t">События</div>
-     ${ev.map(([k,t,s])=>`<div class="adm-tog-row"><div class="adm-tog-tx">${t}<span>${s}</span></div><div class="adm-toggle ${tg.events[k]?'on':''}" onclick="_nfToggle('${k}')"></div></div>`).join('')}
-     <div class="adm-row" style="margin-top:14px"><button class="adm-btn" onclick="_nfTest()">Отправить тест</button><button class="adm-btn ghost" onclick="renderAdminExport();toast('Сохранено в config')">Сохранить</button></div>`;
+    `<div class="adm-hint" style="margin-bottom:12px">Telegram-бот пишет вам о покупках, пополнениях и других событиях магазина.</div>
+     ${status}
+     <div class="adm-sec-t">Как поднять бота</div>
+     <ol class="adm-steps">
+       <li>В Telegram откройте <b>@BotFather</b> → <code>/newbot</code> → получите <b>токен</b>.</li>
+       <li>Напишите своему боту любое сообщение, затем узнайте свой <b>chat id</b> через <b>@userinfobot</b>.</li>
+       <li>Впишите на сервере в <code>.env</code>: <code>TELEGRAM_BOT_TOKEN</code> и <code>TELEGRAM_CHAT_ID</code>, перезапустите. <i>Либо передайте токен и chat id нейросети — она впишет сама.</i></li>
+     </ol>
+     <div class="adm-sec-t">Какие события слать</div>
+     ${ev.map(([k,t,s])=>`<div class="adm-tog-row"><div class="adm-tog-tx">${t}<span>${s}</span></div><div class="adm-toggle ${tg.events[k]!==false?'on':''}" onclick="_nfToggle('${k}')"></div></div>`).join('')}
+     <div class="adm-row" style="margin-top:14px"><button class="adm-btn" onclick="_nfTest()" ${connected?'':'disabled'}>Отправить тест</button></div>`;
 }
-function _nfEdit(k,v){_activeCfg.notifications.telegram[k]=v;persistCfg();}
-function _nfToggle(k){const e=_activeCfg.notifications.telegram.events;e[k]=!e[k];persistCfg();renderAdminNotif();}
-function _nfTest(){
-  const tg=_activeCfg.notifications.telegram;
-  if(!tg.botToken||!tg.chatId){toast('Укажите Bot Token и Chat ID');return;}
-  toast('Тестовое уведомление отправлено (демо)');
+function _nfToggle(k){const e=_activeCfg.notifications.telegram.events;e[k]=e[k]===false?true:false;persistCfg();renderAdminNotif();}
+async function _nfTest(){
+  if(!_backend){toast('Тест доступен только с бэкендом (npm start)');return;}
+  try{
+    const r=await fetch('/api/notify/test',{method:'POST'});
+    if(r.ok)toast('Тест отправлен — проверьте Telegram');
+    else if(r.status===400)toast('Сначала задайте токен в .env');
+    else if(r.status===403)toast('Нужна авторизация владельца');
+    else toast('Не удалось отправить (проверьте токен/chat id)');
+  }catch{toast('Сервер недоступен');}
 }
 
 function renderAdminShop(){

@@ -39,15 +39,35 @@ npm start                   # http://localhost:3000
 
 Без `LZT_TOKEN` работает демо-режим на встроенных данных. Можно открыть `web/index.html` напрямую — витрина работает и как статика.
 
-## Деплой на сервер + домен
+## Запуск для новичка — через нейросеть
 
-Ubuntu-сервер, домен указан A-записью на его IP. Одна команда на сервере ставит Node, Caddy (авто-HTTPS) и systemd-сервис:
+Идея: вы только покупаете сервер и даёте данные нейросети — остальное она делает сама по MCP.
+
+1. **Сервер.** Купите VPS с Ubuntu 22.04/24.04, 1 vCPU / 1 ГБ RAM (хватит самого дешёвого, ~3–5 $/мес у любого хостера). Получите его IP и root-доступ.
+2. **Домен.** Заведите домен, добавьте его в [Cloudflare](https://dash.cloudflare.com) (бесплатно), создайте API-токен: My Profile → API Tokens → шаблон «Edit zone DNS».
+3. **Скажите нейросети** (Claude Code, Cursor — что угодно с MCP), открыв этот репозиторий:
+
+   > Разверни магазин на домен `shop.example.com`. Сервер `<IP>`, root-пароль `<…>`. Cloudflare-токен `<…>`. Пароль владельца `<…>`. Мой LZT-токен `<…>`, токен CryptoBot `<…>`, Telegram-бот `<…>` chat id `<…>`.
+
+   Нейросеть по инструкции из [AGENTS.md](AGENTS.md): создаст DNS-запись в Cloudflare, поднимет сервер с HTTPS, впишет секреты, подключит оплату и уведомления. Готово — магазин в проде.
+
+Дальше всё меняется тоже словами: «поставь тему ocean», «добавь способ оплаты», «включи уведомления о покупках».
+
+## Деплой вручную
+
+Ubuntu-сервер, домен A-записью на его IP. Одна команда на сервере ставит Node, Caddy (авто-HTTPS) и systemd:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/marketmcp/lzt-reseller/main/deploy/server-setup.sh | sudo bash -s -- shop.example.com
 ```
 
-Дальше вписать `OWNER_PASSWORD` и `LZT_TOKEN` в `/opt/lzt-reseller/.env` и `systemctl restart lzt-reseller`. Обновления — `sudo bash /opt/lzt-reseller/deploy/update.sh`. Подробно, плюс Docker — [docs/DEPLOY.md](docs/DEPLOY.md).
+Затем вписать секреты в `/opt/lzt-reseller/.env` и `systemctl restart lzt-reseller`. DNS через Cloudflare: `bash deploy/cloudflare-dns.sh <CF_TOKEN> <домен> <IP>`. Обновления: `sudo bash /opt/lzt-reseller/deploy/update.sh`. Подробно + Docker — [docs/DEPLOY.md](docs/DEPLOY.md).
+
+## Оплата и уведомления
+
+- **Крипта (CryptoBot):** создайте приложение в @CryptoBot → Crypto Pay, токен в `CRYPTOBOT_TOKEN` (.env). Метод «Крипта» начнёт принимать реальные платежи (счёт + проверка оплаты). Без токена — работает как демо.
+- **Telegram:** токен у @BotFather, chat id у @userinfobot → в `.env`. Магазин шлёт уведомления о покупках и пополнениях. Управление событиями — в админке → «Уведомления».
+- Свои мерчанты (карты/ЮMoney/СБП): метод в `config.payments` + вебхук в `server/index.js` (`/api/pay/*`).
 
 ## Настройка
 

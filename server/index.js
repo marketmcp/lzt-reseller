@@ -46,6 +46,8 @@ const CFG = {
   lztHost: process.env.LZT_HOST || 'prod-api.lzt.market',
   tgToken: process.env.TELEGRAM_BOT_TOKEN || '',
   tgChat: process.env.TELEGRAM_CHAT_ID || '',
+  cbToken: process.env.CRYPTOBOT_TOKEN || '',                  // CryptoBot (Crypto Pay) — оплата криптой
+  cbHost: process.env.CRYPTOBOT_HOST || 'pay.crypt.bot',       // testnet: testnet-pay.crypt.bot
   secureCookie: process.env.SECURE_COOKIE === '1',
 };
 
@@ -159,6 +161,27 @@ function telegramSend(text) {
     r.on('error', reject); r.write(payload); r.end();
   });
 }
+// ─── CryptoBot (Crypto Pay API) — реальная оплата криптой ───
+function cryptoPay(method, params) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(params || {});
+    const r = https.request({ host: CFG.cbHost, path: '/api/' + method, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Crypto-Pay-API-Token': CFG.cbToken, 'Content-Length': Buffer.byteLength(payload) } },
+      resp => { let d = ''; resp.on('data', c => d += c); resp.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve({}); } }); });
+    r.on('error', reject); r.write(payload); r.end();
+  });
+}
+function escHtml(s) { return String(s == null ? '' : s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c])); }
+function formatEvent(b) {
+  const cur = escHtml(b.currency || '₽');
+  const money = n => (Number(n) || 0).toLocaleString('ru') + ' ' + cur;
+  switch (b.type) {
+    case 'purchase': return `🛒 <b>Новая покупка</b>\n${escHtml(b.title || 'Товар')}\nЦена: <b>${money(b.price)}</b>` + (b.order ? `\nЗаказ #${escHtml(b.order)}` : '');
+    case 'topup':    return `💰 <b>Пополнение баланса</b>\nСумма: <b>${money(b.amount)}</b>` + (b.balance != null ? `\nНовый баланс: ${money(b.balance)}` : '');
+    case 'action':   return b.text ? `🔔 ${escHtml(b.text)}` : null;
+    default: return null;
+  }
+}
 
 // ════════════════════════ static files ════════════════════════
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff2': 'font/woff2' };
@@ -187,7 +210,7 @@ async function api(req, res, u) {
   const p = u.pathname;
 
   // health / demo-detection
-  if (p === '/api/health') return send(res, 200, { ok: true, demo: !CFG.lztToken, owner: isOwner(req) });
+  if (p === '/api/health') return send(res, 200, { ok: true, demo: !CFG.lztToken, owner: isOwner(req), telegram: !!(CFG.tgToken && CFG.tgChat), pay: { cryptobot: !!CFG.cbToken } });
 
   // ── owner auth ──
   if (p === '/api/auth/login' && req.method === 'POST') {
@@ -222,8 +245,43 @@ async function api(req, res, u) {
   if (p === '/api/notify/test' && req.method === 'POST') {
     if (!isOwner(req)) return send(res, 403, { error: 'forbidden' });
     if (!CFG.tgToken || !CFG.tgChat) return send(res, 400, { error: 'telegram_not_configured' });
-    try { const r = await telegramSend('✅ <b>Vault</b>: тестовое уведомление. Бот подключён.'); return send(res, r.status === 200 ? 200 : 502, { ok: r.status === 200, status: r.status }); }
+    try { const r = await telegramSend('✅ <b>Уведомления подключены.</b> Бот будет писать о покупках, пополнениях и других событиях магазина.'); return send(res, r.status === 200 ? 200 : 502, { ok: r.status === 200, status: r.status }); }
     catch (e) { return send(res, 502, { error: 'telegram_failed' }); }
+  }
+
+  // ── Telegram событие (покупка/пополнение/действие) ──
+  // Вызывается фронтендом при реальном событии. Если Telegram не настроен —
+  // тихо пропускаем. Тротлинг — общий rate-limit на /api.
+  if (p === '/api/notify/event' && req.method === 'POST') {
+    if (!CFG.tgToken || !CFG.tgChat) return send(res, 200, { skipped: true, reason: 'not_configured' });
+    let b = {}; try { b = JSON.parse(await readBody(req)); } catch {}
+    const text = formatEvent(b);
+    if (!text) return send(res, 200, { skipped: true, reason: 'unknown_type' });
+    try { const r = await telegramSend(text); return send(res, 200, { ok: r.status === 200 }); }
+    catch (e) { return send(res, 200, { ok: false }); }
+  }
+
+  // ── Оплата криптой (CryptoBot). Без токена — фронт уходит в демо-режим. ──
+  if (p === '/api/pay/create' && req.method === 'POST') {
+    if (!CFG.cbToken) return send(res, 200, { configured: false });
+    let b = {}; try { b = JSON.parse(await readBody(req)); } catch {}
+    const amount = Number(b.amount) || 0;
+    if (amount <= 0) return send(res, 400, { error: 'bad_amount' });
+    try {
+      const r = await cryptoPay('createInvoice', { currency_type: 'fiat', fiat: (b.currency || 'RUB'), amount: String(amount), description: String(b.title || 'Покупка').slice(0, 200), payload: String(b.ref || '') });
+      if (r && r.ok && r.result) return send(res, 200, { configured: true, payUrl: r.result.bot_invoice_url || r.result.mini_app_invoice_url || r.result.pay_url, invoiceId: r.result.invoice_id });
+      return send(res, 502, { error: 'create_failed', detail: r && r.error });
+    } catch (e) { return send(res, 502, { error: 'create_failed' }); }
+  }
+  if (p === '/api/pay/status') {
+    if (!CFG.cbToken) return send(res, 200, { configured: false });
+    const id = u.searchParams.get('invoiceId');
+    if (!id) return send(res, 400, { error: 'no_id' });
+    try {
+      const r = await cryptoPay('getInvoices', { invoice_ids: String(id) });
+      const inv = r && r.result && r.result.items && r.result.items[0];
+      return send(res, 200, { configured: true, paid: !!(inv && inv.status === 'paid'), status: inv && inv.status });
+    } catch (e) { return send(res, 200, { configured: true, paid: false }); }
   }
 
   // ── LZT proxy (токен на сервере, в браузер не уходит) ──

@@ -131,12 +131,13 @@ window.GHOSTSHOP_CONFIG = {
        provider — 'card' | 'crypto' | 'sbp' | 'custom' (для бэкенда)
      ────────────────────────────────────────────────────────────── */
   payments: [
-    { id:'card', name:'Карта',  icon:'visa',   provider:'card',   merchant:'', enabled:true },
-    { id:'usdt', name:'USDT',   icon:'tether', provider:'crypto', merchant:'', enabled:true },
-    { id:'sbp',  name:'СБП',    icon:null,     provider:'sbp',    merchant:'', enabled:true },
+    // provider:'crypto' + CRYPTOBOT_TOKEN в .env = реальная оплата через CryptoBot.
+    // Без токена этот метод работает как демо (списание с баланса).
+    { id:'crypto', name:'Крипта (CryptoBot)', icon:'bitcoin', provider:'crypto', merchant:'', enabled:true },
+    { id:'card',   name:'Карта', icon:'visa', provider:'card', merchant:'', enabled:true },
+    { id:'sbp',    name:'СБП',   icon:null,    provider:'sbp',  merchant:'', enabled:true },
     // Пример своего мерчанта:
     // { id:'yoomoney', name:'ЮMoney', icon:'yoomoney', provider:'custom', merchant:'4100xxxxxxxx', enabled:true },
-    // { id:'cryptobot', name:'CryptoBot', icon:'telegram', provider:'crypto', merchant:'@your_bot', enabled:true },
   ],
 
   /* ─────────────────────── УВЕДОМЛЕНИЯ ──────────────────────────
