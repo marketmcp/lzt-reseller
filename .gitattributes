@@ -1,0 +1,9 @@
+# Единые переводы строк: LF для всего текста (важно для bash-скриптов на Linux).
+* text=auto eol=lf
+
+# бинарники
+*.png binary
+*.jpg binary
+*.webp binary
+*.ico binary
+*.woff2 binary

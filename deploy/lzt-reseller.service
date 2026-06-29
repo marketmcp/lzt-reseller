@@ -1,0 +1,19 @@
+[Unit]
+Description=LZT Reseller storefront
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/lzt-reseller
+ExecStart=/usr/bin/node server/index.js
+EnvironmentFile=/opt/lzt-reseller/.env
+Restart=always
+RestartSec=3
+User=www-data
+Group=www-data
+# жёсткие лимиты/изоляция
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/opt/lzt-reseller/data
+
+[Install]
+WantedBy=multi-user.target

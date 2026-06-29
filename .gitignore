@@ -1,0 +1,22 @@
+# secrets & env
+.env
+.env.local
+*.env
+
+# runtime data (store config written by admin)
+/data/
+
+# node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# os / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# logs
+*.log

@@ -1,0 +1,13 @@
+{
+  "name": "lzt-reseller",
+  "version": "1.0.0",
+  "description": "Витрина-реселлер для LZT Market: каталог, админка владельца и безопасный бэкенд-прокси к API. Настройка вручную или нейросетью по MCP.",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js"
+  },
+  "keywords": ["lzt-market", "reseller", "storefront", "marketplace", "mcp"]
+}
